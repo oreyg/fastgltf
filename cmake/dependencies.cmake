@@ -232,3 +232,39 @@ if (FASTGLTF_ENABLE_EXAMPLES)
         target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
     endif ()
 endif ()
+
+#physfs
+if (FASTGLTF_ENABLE_EXAMPLES)
+    message(STATUS "fastgltf: Fetching PhysFS")
+    FetchContent_Declare(
+        physfs
+        GIT_REPOSITORY https://github.com/icculus/physfs.git
+        GIT_TAG release-3.2.0
+        GIT_SHALLOW TRUE
+    )
+
+    # Disable everything except .zip
+    option(PHYSFS_ARCHIVE_ZIP "PHYSFS: Enable ZIP support" ON)
+    option(PHYSFS_ARCHIVE_7Z "PHYSFS: Enable 7zip support" OFF)
+    option(PHYSFS_ARCHIVE_GRP "PHYSFS: Enable Build Engine GRP support" OFF)
+    option(PHYSFS_ARCHIVE_WAD "PHYSFS: Enable Doom WAD support" OFF)
+    option(PHYSFS_ARCHIVE_CSM "PHYSFS: Enable Chasm: The Rift CSM.BIN support" OFF)
+    option(PHYSFS_ARCHIVE_HOG "PHYSFS: Enable Descent I/II HOG support" OFF)
+    option(PHYSFS_ARCHIVE_MVL "PHYSFS: Enable Descent I/II MVL support" OFF)
+    option(PHYSFS_ARCHIVE_QPAK "PHYSFS: Enable Quake I/II QPAK support" OFF)
+    option(PHYSFS_ARCHIVE_ROFS "PHYSFS: Enable Resident Evil 3 ROFS support" OFF)
+    option(PHYSFS_ARCHIVE_SLB "PHYSFS: Enable I-War / Independence War SLB support" OFF)
+    option(PHYSFS_ARCHIVE_ISO9660 "PHYSFS: Enable ISO9660 support" OFF)
+    option(PHYSFS_ARCHIVE_VDF "PHYSFS: Enable Gothic I/II VDF archive support" OFF)
+    option(PHYSFS_ARCHIVE_LECARCHIVES "PHYSFS: Enable LucasArts GOB/LAB/LFD Archive support" OFF)
+    option(PHYSFS_ARCHIVE_POD "PHYSFS: Enable Terminal Reality POD Archive support" OFF)
+
+    # Other options
+    option(PHYSFS_BUILD_TEST "PHYSFS: Build stdio test program." OFF)
+    option(PHYSFS_INSTALL "PHYSFS: Enable PhysFS installation" OFF)
+    option(PHYSFS_BUILD_DOCS "PHYSFS: Build doxygen based documentation" OFF)
+
+    # PhysFS comes with <min>..<max> version requirements for CMake, and that breaks FetchContext
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    FetchContent_MakeAvailable(physfs)
+endif ()

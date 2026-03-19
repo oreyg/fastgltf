@@ -609,6 +609,21 @@ namespace fastgltf {
 		[[nodiscard]] virtual std::size_t totalSize() = 0;
 	};
 
+	/**
+	 * This interface defines how the parser should open paths
+	 */
+	FASTGLTF_EXPORT class GltfAbstractFS {
+	public:
+		virtual ~GltfAbstractFS() noexcept = default;
+
+		/**
+		 * This functions opens a file and returns a new GltfDataGetter.
+		 * The path provided to this function is relative to the directory where GLTF file is located.
+		 */
+		[[nodiscard]] virtual Expected<std::unique_ptr<GltfDataGetter>> open(std::string_view relativePath) = 0;
+
+	};
+
 	FASTGLTF_EXPORT class GltfDataBuffer : public GltfDataGetter {
 	protected:
 		std::unique_ptr<std::byte[]> buffer;
@@ -782,6 +797,19 @@ namespace fastgltf {
 	};
 	#endif
 
+	FASTGLTF_EXPORT class GltfStandardFS : public GltfAbstractFS {
+		std::filesystem::path directory;
+
+	public:
+		explicit GltfStandardFS(std::filesystem::path&& _directory);
+		~GltfStandardFS() noexcept = default;
+
+		virtual Expected<std::unique_ptr<GltfDataGetter>> open(std::string_view relativePath) override;
+
+		const std::filesystem::path& rootDirectory() const;
+
+	};
+
 	/**
 	 * Enum to represent the type of a glTF file. glTFs can either be the standard JSON file with
 	 * paths to buffers or with a base64 embedded buffers, or they can be in a so called GLB
@@ -841,7 +869,7 @@ namespace fastgltf {
 #if !FASTGLTF_DISABLE_CUSTOM_MEMORY_POOL
 		std::shared_ptr<std::pmr::monotonic_buffer_resource> resourceAllocator;
 #endif
-		std::filesystem::path directory;
+		std::unique_ptr<GltfAbstractFS> abstractFS;
 		Options options = Options::None;
 
 		static auto getMimeTypeFromString(std::string_view mime) -> MimeType;
@@ -906,18 +934,41 @@ namespace fastgltf {
         [[nodiscard]] Expected<Asset> loadGltf(GltfDataGetter& buffer, std::filesystem::path directory, Options options = Options::None, Category categories = Category::All);
 
         /**
+         * Loads a glTF file from pre-loaded bytes.
+         *
+         * This function tries to detect wether the bytes represent a standard JSON glTF or a binary glTF.
+         *
+         * @return An Asset wrapped in an Expected type, which may contain an error if one occurred.
+         */
+        [[nodiscard]] Expected<Asset> loadGltf(GltfDataGetter& buffer, std::unique_ptr<GltfAbstractFS>&& abstractFS, Options options = Options::None, Category categories = Category::All);
+
+        /**
          * Loads a glTF file from pre-loaded bytes representing a JSON file.
          *
          * @return An Asset wrapped in an Expected type, which may contain an error if one occurred.
          */
         [[nodiscard]] Expected<Asset> loadGltfJson(GltfDataGetter& buffer, std::filesystem::path directory, Options options = Options::None, Category categories = Category::All);
 
-		/**
-		 * Loads a glTF file embedded within a GLB container, which may contain the first buffer of the glTF asset.
-		 *
+        /**
+         * Loads a glTF file from pre-loaded bytes representing a JSON file.
+         *
          * @return An Asset wrapped in an Expected type, which may contain an error if one occurred.
-		 */
-		[[nodiscard]] Expected<Asset> loadGltfBinary(GltfDataGetter& buffer, std::filesystem::path directory, Options options = Options::None, Category categories = Category::All);
+         */
+        [[nodiscard]] Expected<Asset> loadGltfJson(GltfDataGetter& buffer, std::unique_ptr<GltfAbstractFS>&& abstractFS, Options options = Options::None, Category categories = Category::All);
+
+        /**
+         * Loads a glTF file embedded within a GLB container, which may contain the first buffer of the glTF asset.
+         *
+         * @return An Asset wrapped in an Expected type, which may contain an error if one occurred.
+         */
+        [[nodiscard]] Expected<Asset> loadGltfBinary(GltfDataGetter& buffer, std::filesystem::path directory, Options options = Options::None, Category categories = Category::All);
+
+        /**
+         * Loads a glTF file embedded within a GLB container, which may contain the first buffer of the glTF asset.
+         *
+         * @return An Asset wrapped in an Expected type, which may contain an error if one occurred.
+         */
+        [[nodiscard]] Expected<Asset> loadGltfBinary(GltfDataGetter& buffer, std::unique_ptr<GltfAbstractFS>&& abstractFS, Options options = Options::None, Category categories = Category::All);
 
         /**
          * This function can be used to set callbacks so that you can control memory allocation for

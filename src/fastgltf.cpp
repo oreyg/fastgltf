@@ -4869,18 +4869,42 @@ fg::Expected<fg::Asset> fg::Parser::loadGltf(GltfDataGetter& data, fs::path _dir
     return Error::InvalidFileData;
 }
 
+fg::Expected<fg::Asset> fastgltf::Parser::loadGltf(GltfDataGetter& data, std::unique_ptr<GltfAbstractFS>&& _abstractFS, Options _options, Category categories) {
+    auto type = fastgltf::determineGltfFileType(data);
+
+    if (type == fastgltf::GltfType::glTF) {
+        return loadGltfJson(data, std::move(_abstractFS), _options, categories);
+    }
+
+    if (type == fastgltf::GltfType::GLB) {
+        return loadGltfBinary(data, std::move(_abstractFS), _options, categories);
+    }
+
+    return Error::InvalidFileData;
+}
+
 fg::Expected<fg::Asset> fg::Parser::loadGltfJson(GltfDataGetter& data, fs::path _directory, Options _options, Category categories) {
-    using namespace simdjson;
 
 	options = _options;
-	directory = std::move(_directory);
+	abstractFS = std::make_unique<GltfStandardFS>(std::move(_directory));
+	GltfStandardFS* standardFS = static_cast<GltfStandardFS*>(abstractFS.get());
 
 #if !defined(__ANDROID__)
     // If we never have to load the files ourselves, we're fine with the directory being invalid/blank.
-    if (std::error_code ec; hasBit(_options, Options::LoadExternalBuffers) && (!fs::is_directory(directory, ec) || ec)) {
+    if (std::error_code ec; hasBit(_options, Options::LoadExternalBuffers) && (!fs::is_directory(standardFS->rootDirectory(), ec) || ec)) {
+        options = _options;
         return Error::InvalidPath;
     }
 #endif
+
+	return loadGltfJson(data, std::move(abstractFS), options, categories);
+}
+
+fg::Expected<fg::Asset> fg::Parser::loadGltfJson(GltfDataGetter& data, std::unique_ptr<GltfAbstractFS>&& _abstractFS, Options _options, Category categories) {
+    using namespace simdjson;
+
+	options = _options;
+	abstractFS = std::move(_abstractFS);
 
 	data.reset();
 	auto jsonSpan = data.read(data.totalSize(), SIMDJSON_PADDING);
@@ -4899,12 +4923,22 @@ fg::Expected<fg::Asset> fg::Parser::loadGltfBinary(GltfDataGetter& data, fs::pat
     using namespace simdjson;
 
 	options = _options;
-	directory = std::move(_directory);
+	abstractFS = std::make_unique<GltfStandardFS>(std::move(_directory));
+	GltfStandardFS* standardFS = static_cast<GltfStandardFS*>(abstractFS.get());
 
-    // If we never have to load the files ourselves, we're fine with the directory being invalid/blank.
-    if (std::error_code ec; hasBit(options, Options::LoadExternalBuffers) && (!fs::is_directory(directory, ec) || ec)) {
+	// If we never have to load the files ourselves, we're fine with the directory being invalid/blank.
+    if (std::error_code ec; hasBit(options, Options::LoadExternalBuffers) && (!fs::is_directory(standardFS->rootDirectory(), ec) || ec)) {
 	    return Error::InvalidPath;
     }
+
+	return loadGltfBinary(data, std::move(abstractFS), _options, categories);
+}
+
+fg::Expected<fg::Asset> fg::Parser::loadGltfBinary(GltfDataGetter& data, std::unique_ptr<GltfAbstractFS>&& _abstractFS, Options _options, Category categories) {
+	using namespace simdjson;
+
+	options = _options;
+	abstractFS = std::move(_abstractFS);
 
 	data.reset();
 

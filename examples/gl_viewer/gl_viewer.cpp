@@ -41,6 +41,12 @@
 #include <fastgltf/types.hpp>
 #include <fastgltf/tools.hpp>
 
+#include <physfs.h>
+
+#ifdef _MSC_VER
+#include <codecvt>
+#endif
+
 // It's simpler here to just declare the functions as part of the fastgltf::math namespace.
 namespace fastgltf::math {
 	/** Creates a right-handed view matrix */
@@ -359,6 +365,106 @@ bool loadGltf(Viewer* viewer, std::filesystem::path path) {
 		}
 
         auto asset = parser.loadGltf(gltfFile.get(), path.parent_path(), gltfOptions);
+        if (asset.error() != fastgltf::Error::None) {
+            std::cerr << "Failed to load glTF: " << fastgltf::getErrorMessage(asset.error()) << '\n';
+            return false;
+        }
+
+        viewer->asset = std::move(asset.get());
+    }
+
+    return true;
+}
+
+// path to the gltf file inside the archive is hardcoded for this example, lets assume the file is at the root of the archive and is called "asset.gltf"
+bool loadGltfFromZip(Viewer* viewer, std::filesystem::path path) {
+
+    std::string pathStr = path.generic_u8string(); 
+    PHYSFS_mount(pathStr.c_str(), nullptr, 1);
+
+    class PhysFSFile : public fastgltf::GltfDataGetter
+    {
+    public:
+        explicit PhysFSFile(PHYSFS_File* _file)
+            : file(_file)
+        {
+        }
+
+        void read(void* ptr, std::size_t count) override
+        {
+            PHYSFS_readBytes(file, ptr, count);
+        }
+
+        [[nodiscard]] fastgltf::span<std::byte> read(std::size_t count, std::size_t padding) override
+        {
+            cache.resize(count + padding);
+            PHYSFS_readBytes(file, cache.data(), count);
+            return fastgltf::span<std::byte>{ cache.data(), cache.size() };
+        }
+
+        void reset() override
+        {
+            PHYSFS_seek(file, 0);
+        }
+
+        [[nodiscard]] std::size_t bytesRead() override
+        {
+            return PHYSFS_tell(file);
+        }
+
+        [[nodiscard]] std::size_t totalSize() override
+        {
+            return PHYSFS_fileLength(file);
+        }
+
+        std::vector<std::byte> cache;
+        PHYSFS_File* file;
+    };
+
+    class MountedPhysFS : public fastgltf::GltfAbstractFS
+    {
+        virtual fastgltf::Expected<std::unique_ptr<fastgltf::GltfDataGetter>> open(std::string_view relativePath) override
+        {
+            return std::make_unique<PhysFSFile>(PHYSFS_openRead(relativePath.data()));
+        }
+    };
+
+	if (!std::filesystem::exists(path)) {
+		std::cout << "Failed to find " << path << '\n';
+		return false;
+	}
+
+	if constexpr (std::is_same_v<std::filesystem::path::value_type, wchar_t>) {
+		std::wcout << "Loading " << path << '\n';
+	} else {
+		std::cout << "Loading " << path << '\n';
+	}
+
+    // Parse the glTF file and get the constructed asset
+    {
+		static constexpr auto supportedExtensions =
+			fastgltf::Extensions::KHR_mesh_quantization |
+			fastgltf::Extensions::KHR_texture_transform |
+			fastgltf::Extensions::KHR_materials_variants;
+
+        fastgltf::Parser parser(supportedExtensions);
+
+        constexpr auto gltfOptions =
+            fastgltf::Options::DontRequireValidAssetMember |
+            fastgltf::Options::AllowDouble |
+            fastgltf::Options::LoadExternalBuffers |
+            fastgltf::Options::LoadExternalImages |
+			fastgltf::Options::GenerateMeshIndices;
+
+        PHYSFS_File* physFSFile = PHYSFS_openRead("asset.gltf");
+        if (physFSFile == nullptr)
+        {
+            std::cerr << "Failed to open glTF file: " << PHYSFS_getLastError() << '\n';
+            return false;
+        }
+
+        PhysFSFile file{ physFSFile };
+        auto asset = parser.loadGltf(file, std::make_unique<MountedPhysFS>(), gltfOptions);
         if (asset.error() != fastgltf::Error::None) {
             std::cerr << "Failed to load glTF: " << fastgltf::getErrorMessage(asset.error()) << '\n';
             return false;
@@ -694,6 +800,18 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+#ifdef _MSC_VER
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+    std::string argv0 = conv.to_bytes(argv[0]);
+#else
+    std::string argv0 = argv[0];
+#endif
+    if (PHYSFS_init(argv0.c_str()) == 0)
+    {
+        std::cerr << "Failed to initialize PhysFS." << '\n';
+        return -1;
+    }
+
     auto* mainMonitor = glfwGetPrimaryMonitor();
     const auto* vidMode = glfwGetVideoMode(mainMonitor);
 
@@ -779,9 +897,22 @@ int main(int argc, char* argv[]) {
 
 	// Load the glTF file
     auto start = std::chrono::high_resolution_clock::now();
-    if (!loadGltf(&viewer, gltfFile)) {
-        std::cerr << "Failed to parse glTF" << '\n';
-        return -1;
+
+    std::filesystem::path gltfFilePath = gltfFile;
+    std::filesystem::path ext = gltfFilePath.extension();
+    if (gltfFilePath.extension() != ".zip")
+    {
+        if (!loadGltf(&viewer, gltfFile)) {
+            std::cerr << "Failed to parse glTF" << '\n';
+            return -1;
+        }
+    }
+    else
+    {
+        if (!loadGltfFromZip(&viewer, gltfFile)) {
+            std::cerr << "Failed to parse glTF from .zip" << '\n';
+            return -1;
+        }
     }
 
 	// Add a default material
@@ -1004,4 +1135,5 @@ int main(int argc, char* argv[]) {
 
 	glfwDestroyWindow(window);
     glfwTerminate();
+    PHYSFS_deinit();
 }

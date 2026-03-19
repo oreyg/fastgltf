@@ -1,5 +1,7 @@
 # fastgltf
 
+This branch includes an example that integrates PhysFS - abstraction over filesystem
+
 ![vcpkg](https://img.shields.io/vcpkg/v/fastgltf?style=flat-square)
 ![conan center](https://img.shields.io/conan/v/fastgltf?style=flat-square)
 ![CI_x64 workflow status](https://img.shields.io/github/actions/workflow/status/spnda/fastgltf/ci_x64.yml?label=CI%20x64&style=flat-square)

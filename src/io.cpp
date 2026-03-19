@@ -404,25 +404,62 @@ fg::Expected<fg::DataSource> fg::Parser::loadFileFromApk(const fs::path& path) c
 }
 #endif
 
-fg::Expected<fg::DataSource> fg::Parser::loadFileFromUri(URIView& uri) const noexcept {
-	URI decodedUri(uri.path()); // Re-allocate so we can decode potential characters.
+fg::GltfStandardFS::GltfStandardFS(std::filesystem::path&& _directory)
+	: directory(_directory)
+{
+}
+
+fg::Expected<std::unique_ptr<fg::GltfDataGetter>> fg::GltfStandardFS::open(const std::string_view relativePath)
+{
 	// JSON strings are always in UTF-8, so we can safely always use u8path here.
 	// Since u8path is deprecated with C++20 and newer, u8path is deprecated.
 	// As there is no other proper solution that doesn't do something illegal,
 	// we'll just disable related warnings here.
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#elif defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
+	#if defined(__GNUC__) || defined(__clang__)
+	#pragma GCC diagnostic push
+	#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+	#elif defined(_MSC_VER)
+	#pragma warning(push)
+	#pragma warning(disable : 4996)
+	#endif
+	auto path = directory / fs::u8path(relativePath);
+	#if defined(__GNUC__) || defined(__clang__)
+	#pragma GCC diagnostic pop
+	#elif defined(_MSC_VER)
+	#pragma warning(pop)
+	#endif
+
+	std::error_code error;
+	if (!fs::exists(path, error) || error)
+	{
+		return Error::InvalidURI;
+	}
+
+#if defined(__ANDROID__)
+	if (androidAssetManager != nullptr) {
+		// Try to load external buffers from the APK. If they're not there, fall through to the file case
+		if (auto androidResult = loadFileFromApk(path); androidResult.error() == Error::None) {
+			return std::move(androidResult.get());
+		}
+	}
 #endif
-	auto path = directory / fs::u8path(decodedUri.path());
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#elif defined(_MSC_VER)
-#pragma warning(pop)
-#endif
+
+	auto fileStream = std::make_unique<GltfFileStream>(path);
+	if (!fileStream->isOpen())
+	{
+		return Error::InvalidURI;
+	}
+
+	return fileStream;
+}
+
+const std::filesystem::path& fastgltf::GltfStandardFS::rootDirectory() const
+{
+	return directory;
+}
+
+fg::Expected<fg::DataSource> fg::Parser::loadFileFromUri(URIView& uri) const noexcept {
+	URI decodedUri(uri.path());
 
 #if defined(__ANDROID__)
 	if (androidAssetManager != nullptr) {
@@ -434,33 +471,28 @@ fg::Expected<fg::DataSource> fg::Parser::loadFileFromUri(URIView& uri) const noe
 #endif
 
 	// If we were instructed to load external buffers and the files don't exist, we'll return an error.
-	std::error_code error;
-	if (!fs::exists(path, error) || error) {
-		return Error::MissingExternalBuffer;
+	auto expectedFile = abstractFS->open(decodedUri.path());
+	if (expectedFile.error() != Error::None)
+	{
+		return expectedFile.error();
 	}
 
-	auto length = static_cast<std::streamsize>(fs::file_size(path, error));
-	if (error) {
-		return Error::InvalidURI;
-	}
-
-	std::ifstream file(path, std::ios::binary);
-
+	auto file = std::move(expectedFile.get());
+	std::size_t length = file->totalSize();
 	if (config.mapCallback != nullptr) {
 		auto info = config.mapCallback(static_cast<std::uint64_t>(length), config.userPointer);
 		if (info.mappedMemory != nullptr) {
 			const sources::CustomBuffer customBufferSource = { info.customId };
-			file.read(static_cast<char*>(info.mappedMemory), length);
+			file->read(static_cast<char*>(info.mappedMemory), length);
 			if (config.unmapCallback != nullptr) {
 				config.unmapCallback(&info, config.userPointer);
 			}
-
 			return { customBufferSource };
 		}
 	}
 
-	StaticVector<std::byte> data(static_cast<std::size_t>(length));
-	file.read(reinterpret_cast<char*>(data.data()), length);
+	StaticVector<std::byte> data(length);
+	file->read(reinterpret_cast<char*>(data.data()), length);
 	sources::Array arraySource {
 		std::move(data),
 	};
