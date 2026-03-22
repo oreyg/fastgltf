@@ -392,12 +392,12 @@ void fastgltf::AndroidGltfFileStream::reset()
 
 #pragma region Parser I/O
 
-fg::GltfStandardFS::GltfStandardFS(std::filesystem::path&& _directory)
+fg::GltfStdFSExternalFiles::GltfStdFSExternalFiles(const std::filesystem::path& _directory)
 	: directory(_directory)
 {
 }
 
-fg::Expected<std::unique_ptr<fg::GltfDataGetter>> fg::GltfStandardFS::open(const std::string_view relativePath)
+fg::Expected<std::unique_ptr<fg::GltfDataGetter>> fg::GltfStdFSExternalFiles::open(const std::string_view relativePath)
 {
 	// JSON strings are always in UTF-8, so we can safely always use u8path here.
 	// Since u8path is deprecated with C++20 and newer, u8path is deprecated.
@@ -448,16 +448,21 @@ fg::Expected<std::unique_ptr<fg::GltfDataGetter>> fg::GltfStandardFS::open(const
 	}
 }
 
-const std::filesystem::path& fastgltf::GltfStandardFS::rootDirectory() const
+fg::Expected<fg::GltfStdFSExternalFiles> fastgltf::GltfStdFSExternalFiles::FromAsset(const std::filesystem::path& directory)
 {
-	return directory;
+	if (!fs::exists(directory))
+	{
+		return Error::InvalidPath;
+	}
+
+	return fg::GltfStdFSExternalFiles(directory);
 }
 
 fg::Expected<fg::DataSource> fg::Parser::loadFileFromUri(URIView& uri) const noexcept {
 	URI decodedUri(uri.path());
 
 	// If we were instructed to load external buffers and the files don't exist, we'll return an error.
-	auto expectedFile = abstractFS->open(decodedUri.path());
+	auto expectedFile = extFSGetter->open(decodedUri.path());
 	if (expectedFile.error() != Error::None)
 	{
 		return expectedFile.error();

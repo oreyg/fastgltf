@@ -421,7 +421,7 @@ bool loadGltfFromZip(Viewer* viewer, std::filesystem::path path) {
         PHYSFS_File* file;
     };
 
-    class MountedPhysFS : public fastgltf::GltfAbstractFS
+    class MountedPhysFS : public fastgltf::GltfExternalFilesGetter
     {
         virtual fastgltf::Expected<std::unique_ptr<fastgltf::GltfDataGetter>> open(std::string_view relativePath) override
         {
@@ -464,7 +464,8 @@ bool loadGltfFromZip(Viewer* viewer, std::filesystem::path path) {
         }
 
         PhysFSFile file{ physFSFile };
-        auto asset = parser.loadGltf(file, std::make_unique<MountedPhysFS>(), gltfOptions);
+        MountedPhysFS mountedPhysFS;
+        auto asset = parser.loadGltf(file, mountedPhysFS, gltfOptions);
         if (asset.error() != fastgltf::Error::None) {
             std::cerr << "Failed to load glTF: " << fastgltf::getErrorMessage(asset.error()) << '\n';
             return false;

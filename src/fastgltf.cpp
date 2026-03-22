@@ -4839,6 +4839,29 @@ fg::GltfType fg::determineGltfFileType(GltfDataGetter& data) {
 	return GltfType::Invalid;
 }
 
+namespace fastgltf
+{
+    class AssetGetterScope
+    {
+        fg::Parser* parser;
+
+    public:
+        AssetGetterScope(Parser* inParser, GltfExternalFilesGetter& AssetGetter)
+            : parser(inParser)
+        {
+            parser->extFSGetter = &AssetGetter;
+        }
+
+        ~AssetGetterScope()
+        {
+            parser->extFSGetter = nullptr;
+        }
+
+        AssetGetterScope(const AssetGetterScope&) = delete;
+        AssetGetterScope(AssetGetterScope&&) = delete;
+    };
+}
+
 fg::Parser::Parser(Extensions extensionsToLoad) noexcept {
     std::call_once(crcInitialisation, initialiseCrc);
     jsonParser = std::make_unique<simdjson::dom::parser>();
@@ -4869,15 +4892,15 @@ fg::Expected<fg::Asset> fg::Parser::loadGltf(GltfDataGetter& data, fs::path _dir
     return Error::InvalidFileData;
 }
 
-fg::Expected<fg::Asset> fastgltf::Parser::loadGltf(GltfDataGetter& data, std::unique_ptr<GltfAbstractFS>&& _abstractFS, Options _options, Category categories) {
+fg::Expected<fg::Asset> fastgltf::Parser::loadGltf(GltfDataGetter& data, GltfExternalFilesGetter& _assetGetter, Options _options, Category categories) {
     auto type = fastgltf::determineGltfFileType(data);
 
     if (type == fastgltf::GltfType::glTF) {
-        return loadGltfJson(data, std::move(_abstractFS), _options, categories);
+        return loadGltfJson(data, _assetGetter, _options, categories);
     }
 
     if (type == fastgltf::GltfType::GLB) {
-        return loadGltfBinary(data, std::move(_abstractFS), _options, categories);
+        return loadGltfBinary(data, _assetGetter, _options, categories);
     }
 
     return Error::InvalidFileData;
@@ -4885,63 +4908,68 @@ fg::Expected<fg::Asset> fastgltf::Parser::loadGltf(GltfDataGetter& data, std::un
 
 fg::Expected<fg::Asset> fg::Parser::loadGltfJson(GltfDataGetter& data, fs::path _directory, Options _options, Category categories) {
 
+#if !defined(__ANDROID__)
+    std::error_code ec;
+    // If we never have to load the files ourselves, we're fine with the directory being invalid/blank.
+    bool isInvalidDirectory = hasBit(options, Options::LoadExternalBuffers) && (!fs::is_directory(_directory, ec) || ec);
+#endif
+
 	options = _options;
-	abstractFS = std::make_unique<GltfStandardFS>(std::move(_directory));
+    auto ownedFSGetter = GltfStdFSExternalFiles::FromAsset(_directory);
 
 #if !defined(__ANDROID__)
-    // If we never have to load the files ourselves, we're fine with the directory being invalid/blank.
-	GltfStandardFS* standardFS = static_cast<GltfStandardFS*>(abstractFS.get());
-    if (std::error_code ec; hasBit(_options, Options::LoadExternalBuffers) && (!fs::is_directory(standardFS->rootDirectory(), ec) || ec)) {
-        options = _options;
+    if (isInvalidDirectory) {
         return Error::InvalidPath;
     }
 #endif
 
-	return loadGltfJson(data, std::move(abstractFS), options, categories);
+	return loadGltfJson(data, ownedFSGetter.get(), options, categories);
 }
 
-fg::Expected<fg::Asset> fg::Parser::loadGltfJson(GltfDataGetter& data, std::unique_ptr<GltfAbstractFS>&& _abstractFS, Options _options, Category categories) {
+fg::Expected<fg::Asset> fg::Parser::loadGltfJson(GltfDataGetter& data, GltfExternalFilesGetter& _assetGetter, Options _options, Category categories) {
     using namespace simdjson;
 
-	options = _options;
-	abstractFS = std::move(_abstractFS);
+    AssetGetterScope assetGetterScope(this, _assetGetter);
+    options = _options;
 
-	data.reset();
-	auto jsonSpan = data.read(data.totalSize(), SIMDJSON_PADDING);
-	padded_string_view view(reinterpret_cast<const std::uint8_t*>(jsonSpan.data()),
-									  data.totalSize(),
-									  data.totalSize() + SIMDJSON_PADDING);
-	dom::object root;
+    data.reset();
+    auto jsonSpan = data.read(data.totalSize(), SIMDJSON_PADDING);
+    padded_string_view view(reinterpret_cast<const std::uint8_t*>(jsonSpan.data()),
+                                    data.totalSize(),
+                                    data.totalSize() + SIMDJSON_PADDING);
+    dom::object root;
     if (auto error = jsonParser->parse(view).get(root); error != SUCCESS) FASTGLTF_UNLIKELY {
-	    return Error::InvalidJson;
+        return Error::InvalidJson;
     }
 
-	return parse(root, categories);
+    return parse(root, categories);
 }
 
 fg::Expected<fg::Asset> fg::Parser::loadGltfBinary(GltfDataGetter& data, fs::path _directory, Options _options, Category categories) {
     using namespace simdjson;
 
-	options = _options;
-	abstractFS = std::make_unique<GltfStandardFS>(std::move(_directory));
-	GltfStandardFS* standardFS = static_cast<GltfStandardFS*>(abstractFS.get());
+    std::error_code ec;
+    // If we never have to load the files ourselves, we're fine with the directory being invalid/blank.
+    bool isInvalidDirectory = hasBit(options, Options::LoadExternalBuffers) && (!fs::is_directory(_directory, ec) || ec);
 
-	// If we never have to load the files ourselves, we're fine with the directory being invalid/blank.
-    if (std::error_code ec; hasBit(options, Options::LoadExternalBuffers) && (!fs::is_directory(standardFS->rootDirectory(), ec) || ec)) {
-	    return Error::InvalidPath;
+    options = _options;
+    auto ownedFSGetter = GltfStdFSExternalFiles::FromAsset(_directory);
+
+    if (isInvalidDirectory) {
+        return Error::InvalidPath;
     }
 
-	return loadGltfBinary(data, std::move(abstractFS), _options, categories);
+    return loadGltfBinary(data, ownedFSGetter.get(), _options, categories);
 }
 
-fg::Expected<fg::Asset> fg::Parser::loadGltfBinary(GltfDataGetter& data, std::unique_ptr<GltfAbstractFS>&& _abstractFS, Options _options, Category categories) {
+fg::Expected<fg::Asset> fg::Parser::loadGltfBinary(GltfDataGetter& data, GltfExternalFilesGetter& _assetGetter, Options _options, Category categories) {
 	using namespace simdjson;
 
+    AssetGetterScope assetGetterScope(this, _assetGetter);
+
 	options = _options;
-	abstractFS = std::move(_abstractFS);
 
 	data.reset();
-
     auto header = readBinaryHeader(data);
     if (header.magic != binaryGltfHeaderMagic) {
 	    return Error::InvalidGLB;

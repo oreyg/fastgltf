@@ -585,7 +585,8 @@ namespace fastgltf {
 	FASTGLTF_EXPORT using ExtrasWriteCallback = std::optional<std::string>(std::size_t objectIndex, Category objectType, void* userPointer);
 
 	/**
-	 * This interface defines how the parser can read the bytes making up a glTF or GLB file.
+	 * This interface defines how the parser can read the bytes making up an arbitrary file.
+	 * This includes both .gltf|.glb files, and external resources (.bin, .png, .jpg, etc).
 	 */
 	FASTGLTF_EXPORT class GltfDataGetter {
 	public:
@@ -616,15 +617,16 @@ namespace fastgltf {
 	};
 
 	/**
-	 * This interface defines how the parser should open paths
+	 * This interface defines how the parser should open paths.
 	 */
-	FASTGLTF_EXPORT class GltfAbstractFS {
+	FASTGLTF_EXPORT class GltfExternalFilesGetter {
 	public:
-		virtual ~GltfAbstractFS() noexcept = default;
+		virtual ~GltfExternalFilesGetter() noexcept = default;
 
 		/**
 		 * This functions opens a file and returns a new GltfDataGetter.
 		 * The path provided to this function is relative to the directory where GLTF file is located.
+		 * This function is mainly used to access external resources linked to the asset.
 		 */
 		[[nodiscard]] virtual Expected<std::unique_ptr<GltfDataGetter>> open(std::string_view relativePath) = 0;
 
@@ -805,18 +807,19 @@ namespace fastgltf {
 	};
 	#endif
 
-	FASTGLTF_EXPORT class GltfStandardFS : public GltfAbstractFS {
+	FASTGLTF_EXPORT class GltfStdFSExternalFiles : public GltfExternalFilesGetter {
+
 		std::filesystem::path directory;
 
+		explicit GltfStdFSExternalFiles(const std::filesystem::path& _directory);
+
 	public:
-		explicit GltfStandardFS(std::filesystem::path&& _directory);
-		~GltfStandardFS() noexcept = default;
+		GltfStdFSExternalFiles() = default;
+		~GltfStdFSExternalFiles() noexcept = default;
 
-		virtual Expected<std::unique_ptr<GltfDataGetter>> open(std::string_view relativePath) override;
+		[[nodiscard]] Expected<std::unique_ptr<GltfDataGetter>> open(std::string_view relativePath) override;
 
-		const std::filesystem::path& rootDirectory() const;
-
-		// TODO: Switch to factory functions as those are canonical to the library
+		[[nodiscard]] static Expected<GltfStdFSExternalFiles> FromAsset(const std::filesystem::path& directory);
 	};
 
 	/**
@@ -878,7 +881,12 @@ namespace fastgltf {
 #if !FASTGLTF_DISABLE_CUSTOM_MEMORY_POOL
 		std::shared_ptr<std::pmr::monotonic_buffer_resource> resourceAllocator;
 #endif
-		std::unique_ptr<GltfAbstractFS> abstractFS;
+
+		// This variable is managed by the family of 'load...' functions, it would be populated with currently processed GltfExternalFilesGetter
+		GltfExternalFilesGetter* extFSGetter;
+		// We want to manage extFSGetter automatically
+		friend class AssetGetterScope;
+
 		Options options = Options::None;
 
 		static auto getMimeTypeFromString(std::string_view mime) -> MimeType;
@@ -929,10 +937,10 @@ namespace fastgltf {
         Parser& operator=(Parser&& other) noexcept;
 
         ~Parser();
-
-		// TODO: it makes no sense to pass buffer + directory -
+		
+		// TODO: potentially change the Api the following way -
 		// if you want to use std::filesystem     -> pass only the path to the main gltf, all the rest could be inferred from the json (referenced files would be in the same directory)
-		// if you want to use abstract filesystem -> pass only the instance of GltfAbstractFS (also, we can make it a regular reference)
+		// if you want to use abstract filesystem -> pass only the instance of GltfStdFSExternalFiles (also, we can make it a regular reference)
 
         /**
          * Loads a glTF file from pre-loaded bytes.
@@ -950,7 +958,7 @@ namespace fastgltf {
          *
          * @return An Asset wrapped in an Expected type, which may contain an error if one occurred.
          */
-        [[nodiscard]] Expected<Asset> loadGltf(GltfDataGetter& buffer, std::unique_ptr<GltfAbstractFS>&& abstractFS, Options options = Options::None, Category categories = Category::All);
+        [[nodiscard]] Expected<Asset> loadGltf(GltfDataGetter& buffer, GltfExternalFilesGetter& externalFSGetter, Options options = Options::None, Category categories = Category::All);
 
         /**
          * Loads a glTF file from pre-loaded bytes representing a JSON file.
@@ -964,7 +972,7 @@ namespace fastgltf {
          *
          * @return An Asset wrapped in an Expected type, which may contain an error if one occurred.
          */
-        [[nodiscard]] Expected<Asset> loadGltfJson(GltfDataGetter& buffer, std::unique_ptr<GltfAbstractFS>&& abstractFS, Options options = Options::None, Category categories = Category::All);
+        [[nodiscard]] Expected<Asset> loadGltfJson(GltfDataGetter& buffer, GltfExternalFilesGetter& externalFSGetter, Options options = Options::None, Category categories = Category::All);
 
         /**
          * Loads a glTF file embedded within a GLB container, which may contain the first buffer of the glTF asset.
@@ -978,7 +986,7 @@ namespace fastgltf {
          *
          * @return An Asset wrapped in an Expected type, which may contain an error if one occurred.
          */
-        [[nodiscard]] Expected<Asset> loadGltfBinary(GltfDataGetter& buffer, std::unique_ptr<GltfAbstractFS>&& abstractFS, Options options = Options::None, Category categories = Category::All);
+        [[nodiscard]] Expected<Asset> loadGltfBinary(GltfDataGetter& buffer, GltfExternalFilesGetter& externalFSGetter, Options options = Options::None, Category categories = Category::All);
 
         /**
          * This function can be used to set callbacks so that you can control memory allocation for
