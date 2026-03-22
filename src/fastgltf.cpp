@@ -4887,10 +4887,10 @@ fg::Expected<fg::Asset> fg::Parser::loadGltfJson(GltfDataGetter& data, fs::path 
 
 	options = _options;
 	abstractFS = std::make_unique<GltfStandardFS>(std::move(_directory));
-	GltfStandardFS* standardFS = static_cast<GltfStandardFS*>(abstractFS.get());
 
 #if !defined(__ANDROID__)
     // If we never have to load the files ourselves, we're fine with the directory being invalid/blank.
+	GltfStandardFS* standardFS = static_cast<GltfStandardFS*>(abstractFS.get());
     if (std::error_code ec; hasBit(_options, Options::LoadExternalBuffers) && (!fs::is_directory(standardFS->rootDirectory(), ec) || ec)) {
         options = _options;
         return Error::InvalidPath;

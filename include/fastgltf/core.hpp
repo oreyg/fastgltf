@@ -44,6 +44,12 @@
 // fwd
 #if defined(__ANDROID__)
 struct AAssetManager;
+struct AAsset;
+
+namespace fastgltf
+{
+	using AAssetDeleter = void(*)(AAsset*);
+}
 #endif
 
 namespace simdjson::dom {
@@ -776,24 +782,26 @@ namespace fastgltf {
     #if defined(__ANDROID__)
 	FASTGLTF_EXPORT void setAndroidAssetManager(AAssetManager* assetManager) noexcept;
 
-    FASTGLTF_EXPORT class AndroidGltfDataBuffer : public GltfDataBuffer {
-		explicit AndroidGltfDataBuffer(const std::filesystem::path& path, std::uint64_t byteOffset) noexcept;
+	FASTGLTF_EXPORT class AndroidGltfFileStream : public GltfDataGetter {
+		std::unique_ptr<AAsset, AAssetDeleter> fileStream;
+		Error fileError = Error::None;
+		std::vector<std::byte> buffer;
 
     public:
-        explicit AndroidGltfDataBuffer() noexcept = default;
-        AndroidGltfDataBuffer(const AndroidGltfDataBuffer& other) = delete;
-        AndroidGltfDataBuffer& operator=(const AndroidGltfDataBuffer& other) = delete;
-        AndroidGltfDataBuffer(AndroidGltfDataBuffer&& other) noexcept = default;
-        AndroidGltfDataBuffer& operator=(AndroidGltfDataBuffer&& other) noexcept = default;
-        ~AndroidGltfDataBuffer() noexcept override = default;
+        explicit AndroidGltfFileStream(const std::filesystem::path& path) noexcept;
+		~AndroidGltfFileStream() noexcept override = default;
+	
+		void read(void* ptr, std::size_t count) override;
 
-		static Expected<AndroidGltfDataBuffer> FromAsset(const std::filesystem::path& path, std::uint64_t byteOffset = 0) noexcept {
-			AndroidGltfDataBuffer buffer(path, byteOffset);
-			if (buffer.buffer.get() == nullptr) {
-				return buffer.error;
-			}
-			return buffer;
-		}
+		[[nodiscard]] span<std::byte> read(std::size_t count, std::size_t padding) override;
+
+		void reset() override;
+
+		[[nodiscard]] std::size_t bytesRead() override;
+
+		[[nodiscard]] std::size_t totalSize() override;
+
+		[[nodiscard]] Error error();
 	};
 	#endif
 
@@ -808,6 +816,7 @@ namespace fastgltf {
 
 		const std::filesystem::path& rootDirectory() const;
 
+		// TODO: Switch to factory functions as those are canonical to the library
 	};
 
 	/**
@@ -880,9 +889,6 @@ namespace fastgltf {
 
 		[[nodiscard]] auto decodeDataUri(const URIView& uri) const noexcept -> Expected<DataSource>;
 		[[nodiscard]] auto loadFileFromUri(URIView& uri) const noexcept -> Expected<DataSource>;
-#if defined(__ANDROID__)
-		[[nodiscard]] auto loadFileFromApk(const std::filesystem::path& filepath) const noexcept -> Expected<DataSource>;
-#endif
 
 		Error generateMeshIndices(Asset& asset) const;
 
@@ -923,6 +929,10 @@ namespace fastgltf {
         Parser& operator=(Parser&& other) noexcept;
 
         ~Parser();
+
+		// TODO: it makes no sense to pass buffer + directory -
+		// if you want to use std::filesystem     -> pass only the path to the main gltf, all the rest could be inferred from the json (referenced files would be in the same directory)
+		// if you want to use abstract filesystem -> pass only the instance of GltfAbstractFS (also, we can make it a regular reference)
 
         /**
          * Loads a glTF file from pre-loaded bytes.

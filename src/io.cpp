@@ -323,86 +323,74 @@ namespace fastgltf {
 	 * The value of this global should only be set by fastgltf::setAndroidAssetManager.
 	 */
 	static AAssetManager* androidAssetManager = nullptr;
+
+	static void CloseNullableAsset(AAsset* asset)
+	{
+		if (asset != nullptr)
+		{
+			AAsset_close(asset);
+		}
+	}
 }
 
 void fg::setAndroidAssetManager(AAssetManager* assetManager) noexcept {
 	androidAssetManager = assetManager;
 }
 
-fg::AndroidGltfDataBuffer::AndroidGltfDataBuffer(const fs::path& path, std::uint64_t byteOffset) noexcept {
+fg::AndroidGltfFileStream::AndroidGltfFileStream(const std::filesystem::path &path) noexcept
+	: fileStream(nullptr, CloseNullableAsset)
+{
 	if (androidAssetManager == nullptr) {
-		error = Error::InvalidPath;
+		fileError = Error::InvalidPath;
 		return;
 	}
 
-	const auto filenameString = path.string();
-	auto file = deletable_unique_ptr<AAsset, AAsset_close>(
-		AAssetManager_open(androidAssetManager, filenameString.c_str(), AASSET_MODE_BUFFER));
-	if (file == nullptr) {
-		error = Error::InvalidPath;
+	auto pathString = path.string();
+	auto fileStreamPtr = AAssetManager_open(androidAssetManager, pathString.c_str(), AASSET_MODE_BUFFER);
+	fileStream.reset(fileStreamPtr);
+	if (fileStream == nullptr) {
+		fileError = Error::InvalidPath;
 		return;
-	}
-
-	const auto length = AAsset_getLength(file.get());
-	if (length == 0) {
-		error = Error::InvalidPath;
-		return;
-	}
-
-	dataSize = length - byteOffset;
-	allocatedSize = dataSize + simdjson::SIMDJSON_PADDING;
-	buffer = decltype(buffer)(new(std::nothrow) std::byte[allocatedSize]);
-
-	if (buffer == nullptr) {
-		error = Error::FileBufferAllocationFailed;
-	} else {
-		if (byteOffset > 0)
-			AAsset_seek64(file.get(), byteOffset, SEEK_SET);
-
-		// Copy the data and fill the padding region with zeros.
-		AAsset_read(file.get(), buffer.get(), dataSize);
-		std::memset(buffer.get() + dataSize, 0, allocatedSize - dataSize);
 	}
 }
+
+void fastgltf::AndroidGltfFileStream::read(void *ptr, std::size_t count)
+{
+	AAsset_read(fileStream.get(), ptr, count);
+}
+
+fg::span<std::byte> fastgltf::AndroidGltfFileStream::read(std::size_t count, std::size_t padding)
+{
+	buffer.resize(count + padding);
+	AAsset_read(fileStream.get(), buffer.data(), count);
+	return span<std::byte>(buffer.data(), buffer.size());
+}
+
+void fastgltf::AndroidGltfFileStream::reset()
+{
+	AAsset_seek64(fileStream.get(), 0, SEEK_SET);
+}
+
+[[nodiscard]] std::size_t fastgltf::AndroidGltfFileStream::bytesRead()
+{
+	return AAsset_getLength64(fileStream.get()) - AAsset_getRemainingLength64(fileStream.get());
+}
+
+[[nodiscard]] std::size_t fastgltf::AndroidGltfFileStream::totalSize()
+{
+	return AAsset_getLength64(fileStream.get());
+}
+
+[[nodiscard]] fg::Error fastgltf::AndroidGltfFileStream::error()
+{
+	return fileError;
+}
+
 #endif
 #pragma endregion
 #pragma endregion
 
 #pragma region Parser I/O
-#if defined(__ANDROID__)
-fg::Expected<fg::DataSource> fg::Parser::loadFileFromApk(const fs::path& path) const noexcept {
-	auto file = deletable_unique_ptr<AAsset, AAsset_close>(
-		AAssetManager_open(androidAssetManager, path.c_str(), AASSET_MODE_BUFFER));
-	if (file == nullptr) {
-		return Error::MissingExternalBuffer;
-	}
-
-	const auto length = AAsset_getLength(file.get());
-	if (length == 0) {
-		return Error::MissingExternalBuffer;
-	}
-
-	if (config.mapCallback != nullptr) {
-		auto info = config.mapCallback(static_cast<std::uint64_t>(length), config.userPointer);
-		if (info.mappedMemory != nullptr) {
-			const sources::CustomBuffer customBufferSource = { info.customId, MimeType::None };
-			AAsset_read(file.get(), info.mappedMemory, length);
-			if (config.unmapCallback != nullptr) {
-				config.unmapCallback(&info, config.userPointer);
-			}
-
-			return { customBufferSource };
-		}
-	}
-
-	StaticVector<std::byte> data(static_cast<std::size_t>(length));
-	AAsset_read(file.get(), data.data(), length);
-	sources::Array arraySource {
-		std::move(data),
-	};
-	return { std::move(arraySource) };
-}
-#endif
 
 fg::GltfStandardFS::GltfStandardFS(std::filesystem::path&& _directory)
 	: directory(_directory)
@@ -429,28 +417,35 @@ fg::Expected<std::unique_ptr<fg::GltfDataGetter>> fg::GltfStandardFS::open(const
 	#pragma warning(pop)
 	#endif
 
+#if defined(__ANDROID__)
+	if (androidAssetManager != nullptr) {
+		// Try to load external buffers from the APK. If they're not there, fall through to the file case
+		auto fileStream = std::make_unique<AndroidGltfFileStream>(path);
+		if (fileStream->error() != Error::None)
+		{
+			std::unique_ptr<GltfDataGetter> dataGetter = std::move(fileStream);
+			return dataGetter;
+		}
+	}
+#endif
+
 	std::error_code error;
 	if (!fs::exists(path, error) || error)
 	{
 		return Error::InvalidURI;
 	}
 
-#if defined(__ANDROID__)
-	if (androidAssetManager != nullptr) {
-		// Try to load external buffers from the APK. If they're not there, fall through to the file case
-		if (auto androidResult = loadFileFromApk(path); androidResult.error() == Error::None) {
-			return std::move(androidResult.get());
-		}
-	}
-#endif
-
-	auto fileStream = std::make_unique<GltfFileStream>(path);
-	if (!fileStream->isOpen())
 	{
-		return Error::InvalidURI;
+		auto fileStream = std::make_unique<GltfFileStream>(path);
+		if (!fileStream->isOpen())
+		{
+			return Error::InvalidURI;
+		}
+	
+		// Clang does not handle std::unique_ptr<Derived> to Expected<std::unique_ptr<Base>> well
+		std::unique_ptr<GltfDataGetter> dataGetter = std::move(fileStream);
+		return dataGetter;
 	}
-
-	return fileStream;
 }
 
 const std::filesystem::path& fastgltf::GltfStandardFS::rootDirectory() const
@@ -460,15 +455,6 @@ const std::filesystem::path& fastgltf::GltfStandardFS::rootDirectory() const
 
 fg::Expected<fg::DataSource> fg::Parser::loadFileFromUri(URIView& uri) const noexcept {
 	URI decodedUri(uri.path());
-
-#if defined(__ANDROID__)
-	if (androidAssetManager != nullptr) {
-		// Try to load external buffers from the APK. If they're not there, fall through to the file case
-		if (auto androidResult = loadFileFromApk(path); androidResult.error() == Error::None) {
-			return std::move(androidResult.get());
-		}
-	}
-#endif
 
 	// If we were instructed to load external buffers and the files don't exist, we'll return an error.
 	auto expectedFile = abstractFS->open(decodedUri.path());
